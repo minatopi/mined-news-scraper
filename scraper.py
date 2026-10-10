@@ -46,18 +46,17 @@ for item in news_list:
         "url": link,
     })
 
-# 4. CSVに保存
-fieldnames = ["date", "category", "description", "url"]
-
 with open(
-    "mined_news.csv",
+    "mined_news.json",
     "w",
-    newline="",
-    encoding="utf-8-sig"
+    encoding="utf-8"
 ) as f:
-    writer = csv.DictWriter(f, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(results)
+    json.dump(
+        results,
+        f,
+        ensure_ascii=False,
+        indent=2
+    )
 
 print(f"{len(results)}件のニュースを取得しました。")
-print("mined_news.csv に保存しました。")
+print("mined_news.json に保存しました。")
