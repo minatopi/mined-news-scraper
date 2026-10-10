@@ -1,62 +1,185 @@
-import csv
-import requests
-from bs4 import BeautifulSoup
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urljoin
 
-URL = "https://mined.jp/"
+import requests
+from bs4 import BeautifulSoup
 
-headers = {
-    "User-Agent": "Mozilla/5.0 (compatible; MinedNewsLearningBot/1.0)"
+
+# ========================================
+# 設定
+# ========================================
+
+BASE_URL = "https://mined.jp/"
+OUTPUT_FILE = Path(__file__).resolve().parent / "mined_news.json"
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; MinedNewsLearningBot/1.0)"
+    )
 }
 
-# 1. Webページを取得
-response = requests.get(URL, headers=headers, timeout=30)
-response.raise_for_status()
-response.encoding = response.apparent_encoding
+TIMEOUT = 30
 
-# 2. HTMLを解析
-soup = BeautifulSoup(response.text, "html.parser")
 
-# 3. ニュース一覧を取得
-news_list = soup.select(
-    'div[aria-label="news_scroll"] > a'
-)
+# ========================================
+# Webページを取得
+# ========================================
 
-results = []
+def fetch_html(url: str) -> str:
+    """WebページのHTMLを取得する。"""
+    response = requests.get(
+        url,
+        headers=HEADERS,
+        timeout=TIMEOUT,
+    )
+    response.raise_for_status()
 
-for item in news_list:
-    # 各ニュース内のpタグを取得
-    paragraphs = item.select("p")
+    # 日本語ページの文字コードを処理
+    response.encoding = response.apparent_encoding
 
-    # 日付・カテゴリ・本文がそろっているか確認
-    if len(paragraphs) < 3:
-        continue
+    return response.text
 
-    date = paragraphs[0].get_text(" ", strip=True)
-    category = paragraphs[1].get_text(" ", strip=True)
-    description = paragraphs[2].get_text(" ", strip=True)
 
-    # リンクを取得（相対URLにも対応）
-    link = urljoin(URL, item.get("href", ""))
+# ========================================
+# ニュース一覧を解析
+# ========================================
 
-    results.append({
-        "date": date,
-        "category": category,
-        "description": description,
-        "url": link,
-    })
+def scrape_news(html: str) -> list[dict]:
+    """HTMLからニュース情報を抽出する。"""
+    soup = BeautifulSoup(html, "html.parser")
 
-with open(
-    "mined_news.json",
-    "w",
-    encoding="utf-8"
-) as f:
-    json.dump(
-        results,
-        f,
-        ensure_ascii=False,
-        indent=2
+    # ニュース一覧の親要素
+    container = soup.select_one(
+        'div[aria-label="news_scroll"]'
     )
 
-print(f"{len(results)}件のニュースを取得しました。")
-print("mined_news.json に保存しました。")
+    if container is None:
+        raise ValueError(
+            'ニュース一覧が見つかりません。'
+            'HTMLに aria-label="news_scroll" があるか確認してください。'
+        )
+
+    # 各ニュースはaタグ
+    items = container.select(":scope > a")
+
+    if not items:
+        raise ValueError(
+            "ニュース項目が見つかりません。"
+            "取得したHTMLの構造を確認してください。"
+        )
+
+    results = []
+
+    for item in items:
+        paragraphs = item.select("p")
+
+        # 日付・カテゴリ・本文の3項目が必要
+        if len(paragraphs) < 3:
+            print(
+                "警告: pタグが3個未満の項目をスキップしました。",
+                file=sys.stderr,
+            )
+            continue
+
+        date = paragraphs[0].get_text(
+            " ", strip=True
+        )
+        category = paragraphs[1].get_text(
+            " ", strip=True
+        )
+        description = paragraphs[2].get_text(
+            " ", strip=True
+        )
+
+        # リンク先を取得
+        href = item.get("href")
+
+        if not href:
+            print(
+                f"警告: URLがない項目をスキップしました: {description}",
+                file=sys.stderr,
+            )
+            continue
+
+        link = urljoin(BASE_URL, href)
+
+        results.append({
+            "date": date,
+            "category": category,
+            "description": description,
+            "url": link,
+        })
+
+    if not results:
+        raise ValueError(
+            "ニュース情報を抽出できませんでした。"
+        )
+
+    return results
+
+
+# ========================================
+# JSONファイルに保存
+# ========================================
+
+def save_json(news: list[dict], output_file: Path) -> None:
+    """ニュース一覧をUTF-8のJSONファイルに保存する。"""
+    with output_file.open("w", encoding="utf-8") as file:
+        json.dump(
+            news,
+            file,
+            ensure_ascii=False,
+            indent=2,
+        )
+        file.write("\n")
+
+
+# ========================================
+# メイン処理
+# ========================================
+
+def main() -> None:
+    print(f"取得先: {BASE_URL}")
+
+    try:
+        html = fetch_html(BASE_URL)
+        print("HTMLの取得に成功しました。")
+
+        news = scrape_news(html)
+        print(f"ニュースを {len(news)} 件取得しました。")
+
+        save_json(news, OUTPUT_FILE)
+
+        print(f"保存先: {OUTPUT_FILE}")
+        print("スクレイピングが完了しました。")
+
+        # 取得結果の一部を表示
+        print("\n--- 取得結果のサンプル ---")
+
+        for item in news[:3]:
+            print(json.dumps(
+                item,
+                ensure_ascii=False,
+                indent=2,
+            ))
+
+    except requests.RequestException as error:
+        print(
+            f"HTTPリクエストに失敗しました: {error}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    except (ValueError, OSError) as error:
+        print(
+            f"処理に失敗しました: {error}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
